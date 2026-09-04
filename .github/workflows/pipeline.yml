@@ -92,13 +92,17 @@ jobs:
       - name: Export to CSV
         run: python scripts/export_to_csv.py
 
-      - name: Commit updated CSVs and DB
+      - name: Commit updated CSVs
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add data/exports/ data/pipeline.db
-          git commit -m "chore: auto-update exports $(date -u '+%Y-%m-%d %H:%M UTC')" || true
-          git push || echo "Push skipped (no changes or credentials)"
+          git add data/exports/ || true
+          if [ -n "$(git status --porcelain data/exports/)" ]; then
+            git commit -m "chore: auto-update exports $(date -u '+%Y-%m-%d %H:%M UTC')" || true
+            git push || echo "Push skipped (no changes or credentials)"
+          else
+            echo "No CSV changes to commit."
+          fi
 
       - name: Post-result summary
         run: |
