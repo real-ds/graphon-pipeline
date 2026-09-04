@@ -43,12 +43,23 @@ async def fetch_star_count(
 
     async with limiter.acquire(api_url):
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, headers=headers) as resp:
-                if resp.status == 404:
-                    return None
-                if resp.status == 403:
-                    logger.warning("GitHub API rate-limited; set GITHUB_TOKEN to raise the cap")
-                    return None
-                resp.raise_for_status()
-                data = await resp.json()
-                return data.get("stargazers_count")
+            for attempt in range(3):
+                try:
+                    async with session.get(api_url, headers=headers) as resp:
+                        if resp.status == 404:
+                            return None
+                        if resp.status == 403:
+                            logger.warning("GitHub API rate-limited; set GITHUB_TOKEN to raise the cap")
+                            return None
+                        resp.raise_for_status()
+                        data = await resp.json()
+                        return data.get("stargazers_count")
+                except (aiohttp.ClientConnectorDNSError, aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError) as exc:
+                    if attempt < 2:
+                        import asyncio
+                        wait = 2 ** attempt
+                        logger.warning("GitHub API network error (attempt %d/3): %s — retrying in %ds", attempt + 1, exc, wait)
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.warning("GitHub API unreachable after 3 attempts: %s — skipping star count", exc)
+                        return None
