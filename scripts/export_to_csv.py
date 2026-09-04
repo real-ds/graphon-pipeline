@@ -10,12 +10,17 @@ Outputs:
     data/exports/jobs.csv
     data/exports/news.csv
     data/exports/entity_mapping.csv
+
+Note: All datetime fields are formatted as 'YYYY-MM-DD HH:MM:SS UTC'
+    for readability (e.g., '2026-09-04 10:29:50 UTC').
 """
 from __future__ import annotations
 
 import csv
 import json
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,6 +28,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import select
 
 from src.storage.db import EntityMappingRow, RecordRow, SessionLocal
+
+_ISO_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+
+
+def _readable_datetime(value: str) -> str:
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _flatten(d: dict, prefix: str = "") -> dict:
@@ -32,7 +49,16 @@ def _flatten(d: dict, prefix: str = "") -> dict:
         if isinstance(value, dict):
             flat.update(_flatten(value, full_key))
         else:
-            flat[full_key] = value
+            val = value
+            if val is not None:
+                val_str = str(val)
+                if _ISO_RE.match(val_str):
+                    val_str = _readable_datetime(val_str)
+                elif isinstance(value, (list, tuple)):
+                    val_str = ", ".join(str(x) for x in value)
+            else:
+                val_str = ""
+            flat[full_key] = val_str
     return flat
 
 
@@ -56,6 +82,11 @@ def export_csv(output_dir: Path = Path("data/exports")) -> None:
                 "canonical_name": m.canonical_name,
                 "method": m.method,
                 "confidence": m.confidence,
+                "resolved_at": (
+                    m.resolved_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    if m.resolved_at
+                    else ""
+                ),
             }
             for m in session.scalars(select(EntityMappingRow))
         ]
@@ -83,7 +114,7 @@ def export_csv(output_dir: Path = Path("data/exports")) -> None:
 
     out_path = output_dir / "entity_mapping.csv"
     if mapping_rows:
-        headers = ["raw_name", "canonical_name", "method", "confidence"]
+        headers = ["raw_name", "canonical_name", "method", "confidence", "resolved_at"]
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()

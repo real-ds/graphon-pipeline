@@ -12,7 +12,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -33,7 +35,106 @@ _SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
 ]
 
+_ISO_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+
+
+def _readable_datetime(value: str) -> str:
+    """Convert ISO-8601 datetime string to human-readable 'YYYY-MM-DD HH:MM:SS UTC'."""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _dig(d: dict, dotted: str):
+    """Map dotted header path -> value from a (possibly-nested) dict.
+
+    Datetime strings (ISO-8601) are automatically reformatted to
+    'YYYY-MM-DD HH:MM:SS UTC' for readability in the spreadsheet.
+    Lists/tuples are joined with ', '.
+    """
+    cur = d
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return ""
+        cur = cur[part]
+    if cur is None:
+        return ""
+    val = str(cur)
+    if _ISO_RE.match(val):
+        val = _readable_datetime(val)
+    elif isinstance(cur, (list, tuple)):
+        return ", ".join(str(x) for x in cur)
+    return val
+
+
 _HEADERS_BY_TAB: dict = {
+    "Startups": [
+        "Schema Version",
+        "Record Type",
+        "Source Name",
+        "Source URL",
+        "Collected At (UTC)",
+        "Startup Name",
+        "Employee Count",
+    ],
+    "Products": [
+        "Schema Version",
+        "Record Type",
+        "Source Name",
+        "Source URL",
+        "Collected At (UTC)",
+        "Parent Company",
+        "Pricing Model",
+    ],
+    "Research Papers": [
+        "Schema Version",
+        "Record Type",
+        "Source Name",
+        "Source URL",
+        "Collected At (UTC)",
+        "Paper Title",
+        "Authors",
+        "arXiv / Paper URL",
+        "GitHub URL",
+        "GitHub Stars",
+        "Published At (UTC)",
+    ],
+    "Jobs": [
+        "Schema Version",
+        "Record Type",
+        "Source Name",
+        "Source URL",
+        "Collected At (UTC)",
+        "Company",
+        "Posted At (UTC)",
+        "Remote?",
+        "Role Family",
+    ],
+    "News": [
+        "Schema Version",
+        "Record Type",
+        "Source Name",
+        "Source URL",
+        "Collected At (UTC)",
+        "Headline",
+        "Article Text",
+        "Published At (UTC)",
+        "Related Entity",
+    ],
+    "Entity Mapping Log": [
+        "Raw Name",
+        "Canonical Name",
+        "Resolution Method",
+        "Confidence Score",
+        "Resolved At (UTC)",
+    ],
+}
+
+_DB_KEYS_BY_TAB: dict = {
     "Startups": [
         "schemaVersion",
         "recordType",
@@ -103,19 +204,6 @@ _TAB_FOR_RECORD_TYPE = {
     "NEWS": "News",
 }
 
-# Map dotted header path -> value from a (possibly-nested) dict.
-def _dig(d: dict, dotted: str):
-    cur = d
-    for part in dotted.split("."):
-        if not isinstance(cur, dict) or part not in cur:
-            return ""
-        cur = cur[part]
-    if cur is None:
-        return ""
-    if isinstance(cur, (list, tuple)):
-        return ", ".join(str(x) for x in cur)
-    return str(cur)
-
 
 def _client() -> gspread.Client:
     if not settings.google_service_account_json:
@@ -127,7 +215,6 @@ def _client() -> gspread.Client:
 
 
 def _column_letter(idx: int) -> str:
-    """1-indexed: 1 -> A, 26 -> Z, 27 -> AA."""
     s = ""
     while idx > 0:
         idx, rem = divmod(idx - 1, 26)
@@ -135,8 +222,9 @@ def _column_letter(idx: int) -> str:
     return s
 
 
-def _write_tab(sheet, tab_name: str, headers: list, rows: Iterable[dict]) -> int:
-    """Clear the tab, write headers + rows. Returns number of data rows written."""
+def _write_tab(
+    sheet, tab_name: str, headers: list[str], db_keys: list[str], rows: Iterable[dict]
+) -> int:
     try:
         ws = sheet.worksheet(tab_name)
         ws.clear()
@@ -144,18 +232,17 @@ def _write_tab(sheet, tab_name: str, headers: list, rows: Iterable[dict]) -> int
         ws = sheet.add_worksheet(title=tab_name, rows=100, cols=len(headers))
 
     rows = list(rows)
+    last_col = _column_letter(len(headers))
+
     if not rows:
-        # Still write headers even if no data, so the user can see the schema.
-        ws.update(range_name=f"A1:{_column_letter(len(headers))}1", values=[headers])
+        ws.update(range_name=f"A1:{last_col}1", values=[headers])
         ws.format("A1:Z1", {"textFormat": {"bold": True}})
         return 0
 
-    last_col = _column_letter(len(headers))
     values: list = [headers]
     for r in rows:
-        values.append([_dig(r, h) for h in headers])
+        values.append([_dig(r, k) for k in db_keys])
 
-    # Write header + body in one shot to keep them aligned.
     ws.update(range_name=f"A1:{last_col}{len(values)}", values=values)
     ws.format("A1:Z1", {"textFormat": {"bold": True}})
     ws.freeze(rows=1)
@@ -164,7 +251,6 @@ def _write_tab(sheet, tab_name: str, headers: list, rows: Iterable[dict]) -> int
 
 
 def export_all() -> str:
-    """Returns the spreadsheet URL (created if GOOGLE_SHEETS_ID was empty)."""
     if not settings.google_service_account_json:
         raise RuntimeError("Set GOOGLE_SERVICE_ACCOUNT_JSON in .env before exporting.")
 
@@ -204,15 +290,26 @@ def export_all() -> str:
                 "canonical_name": m.canonical_name,
                 "method": m.method,
                 "confidence": m.confidence,
+                "resolved_at": m.resolved_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                if m.resolved_at
+                else "",
             })
 
     totals: dict = {}
     for record_type, tab_name in _TAB_FOR_RECORD_TYPE.items():
         totals[tab_name] = _write_tab(
-            sheet, tab_name, _HEADERS_BY_TAB[tab_name], rows_by_type.get(record_type, [])
+            sheet,
+            tab_name,
+            _HEADERS_BY_TAB[tab_name],
+            _DB_KEYS_BY_TAB[tab_name],
+            rows_by_type.get(record_type, []),
         )
     totals["Entity Mapping Log"] = _write_tab(
-        sheet, "Entity Mapping Log", _HEADERS_BY_TAB["Entity Mapping Log"], mapping_rows
+        sheet,
+        "Entity Mapping Log",
+        _HEADERS_BY_TAB["Entity Mapping Log"],
+        _DB_KEYS_BY_TAB["Entity Mapping Log"],
+        mapping_rows,
     )
 
     url = sheet.url

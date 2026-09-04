@@ -143,6 +143,38 @@ python scripts/export_to_sheets.py
 This reads the SQLite DB and writes all 6 tabs to the configured Google Sheet,
 with schema-aligned column headers in row 1 (bold, frozen).
 
+### 6. Automated Daily Refresh (GitHub Actions)
+
+The pipeline includes a GitHub Actions workflow (`.github/workflows/pipeline.yml`) that
+automatically refreshes the Google Sheet every day at **08:00 UTC**.
+
+To enable it:
+
+1. Go to **Settings → Secrets and variables → Actions** on your GitHub repo
+2. Add these secrets (get values from your `.env` file):
+
+   | Secret Name | Value |
+   |---|---|
+   | `GEMINI_API_KEY` | Your Gemini API key |
+   | `GROQ_API_KEY` | Your Groq API key (optional) |
+   | `DEEPSEEK_API_KEY` | Your DeepSeek API key (optional) |
+   | `GITHUB_TOKEN` | Auto-populated by GitHub Actions (no need to set manually) |
+   | `GOOGLE_SHEETS_ID` | The Sheet ID from your Google Sheet URL |
+   | `GOOGLE_SERVICE_ACCOUNT_JSON_B64` | Base64-encoded service account JSON |
+
+   To get the base64 service account JSON (PowerShell):
+   ```powershell
+   [Convert]::ToBase64String([System.IO.File]::ReadAllBytes("credentials/oauth_client.json"))
+   ```
+
+3. The workflow runs automatically every day and:
+   - Fetches fresh news + jobs (last 24h only)
+   - Updates the Google Sheet with new records
+   - Commits updated CSV backups to the repo
+   - Re-uses the existing dedup store — no duplicates added
+
+4. You can also trigger it manually: **Actions → Run AI Intelligence Pipeline → Run workflow**
+
 ---
 
 ## 📁 Google Sheets Setup (one-time)
