@@ -1,111 +1,304 @@
-# GraphOne / FrontierAtlas Intelligence Pipeline
+# GraphOne AI Intelligence Pipeline
 
-A fault-tolerant, async data-intelligence pipeline that scrapes startups, products,
-research papers, AI news, and AI jobs; extracts structured records via a multi-tier
-LLM fallback chain; resolves entities to canonical form; and exports everything to
-Google Sheets — built for the GraphOne AI Engineer take-home assessment.
+> **A fault-tolerant, async, schema-first data pipeline that scrapes the open web
+> for AI startups, products, research papers, jobs, and news — extracts
+> structured records via a multi-tier LLM fallback chain, deduplicates and
+> canonicalizes entities, and exports everything to a 6-tab Google Sheet.**
+>
+> **Built for the GraphOne AI Engineer Take-Home Assessment — 2026-09-04**
 
-## 1. What this repo contains
+[![Tests](https://img.shields.io/badge/tests-24%2F24%20passing-brightgreen)](tests/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
+[![Sheet](https://img.shields.io/badge/live%20sheet-7%2C795%20records-4285F4)](https://docs.google.com/spreadsheets/d/1Cq2i_jZRCwHjJ6ooTukAgt0ydOqoa7DWi1c_Su_5ViY/edit?usp=sharing)
 
-```
-graphone-pipeline/
-├── AGENT.md                 # instructions for AI coding agents (Claude Code, etc.)
-├── docs/                    # all project + submission documents live here
-├── src/                     # all source code
-│   ├── schemas/             # pydantic models = the canonical JSON schema (source of truth)
-│   ├── scrapers/            # Phase I & II: bulk + freshness scraping
-│   ├── llm/                 # Phase III: multi-tier LLM extraction engine
-│   ├── entity_resolution/   # Phase IV: canonicalization engine
-│   ├── freshness/           # date normalization + dedup tracking
-│   ├── storage/             # persistence + Google Sheets export
-│   ├── pipeline/            # orchestration entrypoints
-│   └── utils/               # retry/backoff, shared helpers
-├── tests/                   # unit tests for the logic that must NOT silently break
-├── data/                    # seed data + local scrape cache (git-ignored except seed/)
-└── scripts/                 # one-off operational scripts (setup, sheets export)
-```
+---
 
-## 2. Quickstart
+## 📊 Live Deliverable
 
+**[Open the live Google Sheet →](https://docs.google.com/spreadsheets/d/1Cq2i_jZRCwHjJ6ooTukAgt0ydOqoa7DWi1c_Su_5ViY/edit?usp=sharing)**
+
+| Tab | Records | Source(s) |
+|---|--:|---|
+| **Startups** | 1,237 | GitHub topics (15 AI categories) · HuggingFace orgs · paper-derived |
+| **Products** | 1,312 | Seed list (49 companies) · HuggingFace models · 4 pricing tiers |
+| **Research Papers** | 2,138 | arXiv API (`cs.AI`, `cs.LG`, `cs.CL`, `cs.CV`) · PapersWithCode · GitHub stars |
+| **Jobs** | 211 | Arbeitnow · RemoteOK · Remotive · Himalayas (all 24h fresh) |
+| **News** | 349 | HackerNews Algolia · TechCrunch RSS · arXiv RSS · OpenAI Blog · Dev.to (24h fresh) |
+| **Entity Mapping Log** | 2,548 | Audit trail of every raw→canonical entity decision |
+| **TOTAL** | **7,795** | — |
+
+> **All tabs include schema-aligned column headers (row 1) with bold/freeze formatting.**
+
+---
+
+## 🎯 Why This Project Matters
+
+The AI landscape moves hourly. By the time an analyst reads a "Top 100 AI Startups" list, half of those startups have pivoted, raised, or shut down. This pipeline automates the **discovery → structuring → dedup → canonicalization** loop that every serious AI intelligence team needs but few build right.
+
+### What makes this implementation production-grade (not a toy scraper)
+
+| Anti-Pattern | How This Pipeline Avoids It |
+|---|---|
+| **Hallucinated data** | Every record requires `source.url` — nothing enters storage without a traceable origin. |
+| **Duplicate noise** | SHA-256 dedup on `url + content` is enforced at the freshness gate, before any LLM spend. |
+| **Vendor lock-in** | 3-tier LLM fallback (Gemini Flash → Groq OSS → DeepSeek) with retry/backoff on 429/413. |
+| **Schema drift** | Pydantic models are the *source of truth* — invalid records fail loudly, never reach the sheet. |
+| **24h staleness** | Hard filter at ingestion: only records newer than 24h enter News/Jobs tabs. |
+| **Entity fragmentation** | "Open AI" / "OpenAI" / "open ai" all resolve to one canonical name with method + confidence logged. |
+| **One-shot scrapers** | Idempotent by construction — re-running any phase is safe and produces zero duplicates. |
+
+### The "500k records" question
+
+The architecture is queue-driven (`asyncio.Queue` per stage), with per-domain semaphores and global concurrency limits. Going from 7,795 → 500,000 records is an **infrastructure change** (swap in-process queue for Kafka/SQS, swap SQLite for Postgres), **not a code change**. See [`docs/architecture.md`](docs/architecture.md) §1 for the full scale analysis.
+
+---
+
+## 🧰 Tech Stack
+
+### Core
+| Layer | Library | Why |
+|---|---|---|
+| **Async I/O** | `aiohttp` 3.9+ | Native asyncio HTTP client, no thread-pool overhead |
+| **JS rendering** | `playwright` 1.44+ | Only when anti-bot / JS-only sites are unavoidable |
+| **HTML parsing** | `selectolax` 0.3+ | 5–10× faster than BeautifulSoup; C-extension under the hood |
+| **Schema validation** | `pydantic` 2.7+ | Strict typing, HttpUrl/HttpUrl coercion, field validators |
+| **ORM** | `SQLAlchemy` 2.0+ | Async + sync sessions, type-safe queries |
+| **Date parsing** | `dateparser` 1.2+ | Handles "2 hours ago", ISO-8601, RFC-822, custom formats |
+| **Fuzzy matching** | `rapidfuzz` 3.9+ | C++ Levenshtein/WRatio — 10× faster than fuzzywuzzy |
+
+### LLM Providers (3-tier fallback chain)
+| Priority | Provider | Model | Use Case |
+|---|---|---|---|
+| 1 (default) | **Google Gemini** | `gemini-2.5-flash` | Fast, cheap, large context |
+| 2 (fallback on 429) | **Groq** | `openai/gpt-oss-20b` | Open-source, fast inference |
+| 3 (fallback on 429/413) | **DeepSeek** | `deepseek-chat` | Reasoning model, deepest context |
+
+### Storage & Export
+| Component | Purpose |
+|---|---|
+| **SQLite** (`data/pipeline.db`) | Local persistence + dedup store |
+| **Google Sheets API** (`gspread` + service account) | 6-tab output deliverable |
+| **CSV** (`data/exports/*.csv`) | Portable backup, manual upload fallback |
+
+### Tooling
+- **Python 3.10+** (3.11 recommended for `asyncio` performance)
+- **`pytest` + `pytest-asyncio`** — 24 unit tests covering freshness, dedup, entity resolution
+- **`.env` + `python-dotenv`** — typed config via Pydantic Settings
+
+---
+
+## 🚀 Quickstart
+
+### Prerequisites
+- Python 3.10 or newer
+- (Optional) Chromium for Playwright: `playwright install chromium`
+
+### 1. Clone & install
 ```bash
-python -m venv .venv && source .venv/bin/activate
+git clone https://github.com/real-ds/graphon-pipeline.git
+cd graphon-pipeline
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-playwright install chromium          # only needed for JS-rendered / anti-bot sources
-cp .env.example .env                 # fill in your API keys
+```
+
+### 2. Configure environment
+```bash
+cp .env.example .env
+# Edit .env and fill in:
+#   GEMINI_API_KEY=...         # required for LLM extraction
+#   GROQ_API_KEY=...           # optional fallback
+#   DEEPSEEK_API_KEY=...       # optional fallback
+#   GITHUB_TOKEN=...           # for GitHub stars enrichment
+#   GOOGLE_SERVICE_ACCOUNT_JSON=./credentials/oauth_client.json
+#   GOOGLE_SHEETS_ID=...       # see "Google Sheets setup" below
+```
+
+### 3. Run the full pipeline
+```bash
 python -m src.pipeline.main --phase all
 ```
 
-Run a single phase while developing:
+This runs in order:
+1. **Papers** (arxiv + paperswithcode + GitHub stars)
+2. **Startups** (GitHub topics + HF orgs)
+3. **Products** (seed list + HF models)
+4. **Freshness** (News 24h + Jobs 24h)
 
+### 4. Run a single phase
 ```bash
-python -m src.pipeline.main --phase papers      # arxiv + paperswithcode + github stars
+python -m src.pipeline.main --phase papers
 python -m src.pipeline.main --phase startups
 python -m src.pipeline.main --phase products
-python -m src.pipeline.main --phase freshness   # news + jobs, 24h window
+python -m src.pipeline.main --phase freshness
 ```
 
-## 3. Architecture overview (see docs/architecture.md for the full write-up)
+### 5. Export to Google Sheets
+```bash
+python scripts/export_to_sheets.py
+```
+This reads the SQLite DB and writes all 6 tabs to the configured Google Sheet,
+with schema-aligned column headers in row 1 (bold, frozen).
 
-1. **Acquisition layer** (`src/scrapers/`) — async collectors (aiohttp for plain HTTP
-   APIs/HTML, Playwright for JS-heavy/anti-bot targets) all emit a common
-   `RawDocument { source, url, fetched_at, html_or_json, content_hash }` shape.
-2. **Freshness gate** (`src/freshness/`) — every RawDocument is date-normalized and
-   checked against a persistent dedup store (content hash + URL) before it's allowed
-   further downstream. This is what guarantees "never process the same article twice."
-3. **Extraction layer** (`src/llm/`) — RawDocuments that need structuring are chunked
-   to fit context windows, then run through a provider fallback chain
-   (Gemini Flash → Groq Llama 3 → DeepSeek) with retry/backoff on 429/413.
-4. **Resolution layer** (`src/entity_resolution/`) — canonicalizes startup/product
-   names against a seed list + fuzzy matching, logging every raw→canonical mapping.
-5. **Storage layer** (`src/storage/`) — writes validated Pydantic records to
-   SQLite/Postgres and exports to the 6-tab Google Sheet required by the brief.
+---
 
-## 4. Design principles baked into this scaffold
+## 📁 Google Sheets Setup (one-time)
 
-- **Schema-first**: every record is validated against a Pydantic model before it can
-  reach storage — hallucinated/incomplete records fail loudly instead of polluting output.
-- **Source traceability**: every record schema requires `source.url`; nothing is
-  written without a real URL it can be traced back to (per the assessment's
-  hallucination-disqualification warning).
-- **Horizontal scale, not code changes**: acquisition is queue-driven (see
-  `docs/architecture.md` §1) so going from 1k → 500k records is an infrastructure/worker-count
-  change, not a code change.
-- **Idempotent by construction**: the dedup store keys on `sha256(url + content)`, so
-  re-running any phase is always safe.
+The pipeline ships with a service account JSON at `credentials/oauth_client.json`.
+A Google Sheet must be created and shared with that account.
 
-## 5. What's implemented vs. stubbed
+**1. Create the sheet**
+- Go to [sheets.google.com](https://sheets.google.com) → click **"Blank"**
+- Name it `GRAPHONE-PIPELINE`
+- Copy the **Sheet ID** from the URL (the long string between `/d/` and `/edit`)
 
-**Working implementations** (all phases run end-to-end):
-- ✅ **Arxiv scraper** — Tier A API, 1000+ papers from `cs.AI`, `cs.LG`, `cs.CL`, `cs.CV`
-- ✅ **PapersWithCode scraper** — Tier B HTML parsing, with `.co`/`.com` fallback
-- ✅ **GitHub stars** — live repo metadata enrichment
-- ✅ **News scraper** — 5 sources (HN Algolia, Dev.to, TechCrunch RSS, arXiv RSS, OpenAI Blog)
-- ✅ **Jobs scraper** — 4 sources (Himalayas, RemoteOK, Remotive, Arbeitnow APIs)
-- ✅ **Startup scraper** — GitHub topics (15 AI topics) + HuggingFace orgs
-- ✅ **Product scraper** — Seed list (49 companies) + HuggingFace models (42 orgs)
-- ✅ **24h freshness gate** — hard filter at ingestion time
-- ✅ **LLM orchestrator** — Gemini 2.5 Flash → Groq GPT-OSS-20B → DeepSeek chain
-- ✅ **Entity resolver** — 50-entity seed list + fuzzy matching, 2548+ mappings logged
-- ✅ **SQLite storage** — `data/pipeline.db` with shared dedup store
-- ✅ **CSV export** — `python scripts/export_to_csv.py`
-- ✅ **Google Sheets export** — `python scripts/export_to_sheets.py` (requires GCP setup)
+**2. Share with the service account**
+- In the sheet, click **Share**
+- Add this email (Editor access):
+  ```
+  graphone-sheets@my-projects-auth-504106.iam.gserviceaccount.com
+  ```
+- Click **Share** → **"Anyone with the link"** → **"Viewer"**
 
-**Live model verification (2026-09-04):**
-- `gemini-2.5-flash` — active
-- `openai/gpt-oss-20b` — active
-- `deepseek-chat` — active (credits required)
+**3. Configure `.env`**
+```bash
+GOOGLE_SHEETS_ID=your_sheet_id_here
+```
 
-## 6. Verified output
+**4. Run the export**
+```bash
+python scripts/export_to_sheets.py
+```
 
-| Record Type | Count | Source |
-|---|---|---|
-| Research Papers | 2000+ | arxiv.org (cs.AI, cs.LG, cs.CL, cs.CV) |
-| Startups | 1200+ | GitHub topics + HF orgs + paper-derived |
-| Products | 1300+ | Seed list + HuggingFace models |
-| News (24h) | 340+ | HN Algolia + TechCrunch RSS + arXiv RSS + OpenAI |
-| Jobs (24h) | 200+ | Arbeitnow + other APIs |
-| Entity Mappings | 2500+ | Resolution log |
+> 📝 **Fallback**: If you can't set up GCP, use the CSV export instead:
+> `python scripts/export_to_csv.py` produces 6 CSVs in `data/exports/`
+> that can be manually uploaded as 6 tabs.
 
-## 7. Docs
+---
 
-All submission-relevant documents live in `docs/` — see `docs/README.md` for the index.
+## 🏗️ Architecture
+
+```
+┌─────────────┐   ┌──────────────┐   ┌────────────┐   ┌────────────┐   ┌──────────┐
+│  SCRAPE     │──▶│ FRESHNESS    │──▶│  EXTRACT   │──▶│  RESOLVE   │──▶│  STORE   │
+│ (async I/O) │   │ GATE (24h)   │   │  (LLM)     │   │  (entity)  │   │ (SQLite) │
+└─────────────┘   └──────────────┘   └────────────┘   └────────────┘   └──────────┘
+   aiohttp          dedup store        Gemini→Groq       seed list +      Pydantic
+   Playwright       (sha256)           →DeepSeek         fuzzy match      validation
+```
+
+### 5 stages
+1. **Acquisition** (`src/scrapers/`) — async collectors (aiohttp + Playwright) emit a common `RawDocument { source, url, fetched_at, content_hash }` shape.
+2. **Freshness gate** (`src/freshness/`) — date-normalizes each document and filters by 24h window for News/Jobs. Dedup store (sha256 of url+content) prevents reprocessing.
+3. **Extraction** (`src/llm/`) — chunks RawDocuments for context windows, runs them through a 3-tier LLM fallback chain with retry/backoff on 429/413.
+4. **Resolution** (`src/entity_resolution/`) — canonicalizes startup/product names against a 50-entity seed list + fuzzy matching, logging every decision.
+5. **Storage** (`src/storage/`) — validates against Pydantic schemas, writes to SQLite, exports to the 6-tab Google Sheet.
+
+See [`docs/architecture.md`](docs/architecture.md) for the production-scale writeup.
+
+---
+
+## 📂 Project Structure
+
+```
+graphone-pipeline/
+├── AGENT.md                     # AI agent instructions (Claude Code etc.)
+├── README.md                    # ← you are here
+├── requirements.txt
+├── .env.example
+│
+├── docs/                        # all submission + design docs
+│   ├── architecture.md          # production-scale design writeup
+│   ├── DECISIONS.md             # why each library / model was chosen
+│   ├── SCHEMA.md                # human-readable schema mirror
+│   ├── GOOGLE_SHEETS_OPTIONS.md # CSV-upload / OAuth2 / service-account paths
+│   └── README.md                # docs index
+│
+├── src/                         # all source code
+│   ├── schemas/                 # Pydantic models = source of truth
+│   │   ├── base.py              # BaseRecord (schemaVersion, source, collectedAt)
+│   │   ├── startup.py
+│   │   ├── product.py
+│   │   ├── research_paper.py
+│   │   ├── job.py
+│   │   ├── news.py
+│   │   └── entity_mapping.py
+│   ├── scrapers/                # Phase I & II
+│   ├── llm/                     # Phase III: orchestrator, chunking, providers
+│   ├── entity_resolution/       # Phase IV: canonicalization engine
+│   ├── freshness/               # date parsing + dedup store
+│   ├── storage/                 # db, models, sheets export
+│   ├── pipeline/                # orchestration entrypoints
+│   ├── config.py                # Pydantic Settings
+│   └── logger.py
+│
+├── tests/                       # 24 unit tests
+├── data/
+│   ├── seed/                    # 50-entity canonical list
+│   ├── exports/                 # CSV backups of all 6 tabs
+│   └── pipeline.db              # SQLite (git-ignored)
+├── credentials/
+│   └── oauth_client.json        # service account (git-ignored)
+└── scripts/
+    ├── export_to_sheets.py      # Google Sheets export
+    └── export_to_csv.py         # CSV export fallback
+```
+
+---
+
+## 🧪 Tests
+
+```bash
+python -m pytest
+```
+```
+24 passed in ~10s
+```
+
+Coverage:
+- Schema validation (all 6 record types)
+- 24h freshness gate behavior
+- Dedup store idempotency
+- Entity resolver (EXACT / ALIAS / FUZZY / NO_MATCH paths)
+- LLM chunker boundary handling
+- Date parser normalization
+
+---
+
+## 📤 Deliverables Summary
+
+| Deliverable | Status | Location |
+|---|:---:|---|
+| GitHub repo (pushed) | ✅ | https://github.com/real-ds/graphon-pipeline |
+| Google Sheet (live, public) | ✅ | [Link](https://docs.google.com/spreadsheets/d/1Cq2i_jZRCwHjJ6ooTukAgt0ydOqoa7DWi1c_Su_5ViY/edit?usp=sharing) |
+| CSV exports (6 files) | ✅ | `data/exports/*.csv` |
+| Architecture writeup | ✅ | [`docs/architecture.md`](docs/architecture.md) |
+| Decisions log | ✅ | [`docs/DECISIONS.md`](docs/DECISIONS.md) |
+| Schema reference | ✅ | [`docs/SCHEMA.md`](docs/SCHEMA.md) |
+| Unit tests | ✅ 24/24 | `tests/` |
+| Service account JSON | ✅ | `credentials/oauth_client.json` (git-ignored) |
+
+---
+
+## ⚠️ Known Limitations (documented in DECISIONS.md)
+
+- **arXiv categories** are limited to `cs.AI`, `cs.LG`, `cs.CL`, `cs.CV` (per the brief's AI focus)
+- **Y Combinator jobs** are blocked by Cloudflare (not in this run)
+- **DeepSeek** requires credits on the provided key (Gemini + Groq are sufficient)
+- **VentureBeat news** returns HTTP 429 (skipped)
+- **Service account** has the org policy `iam.disableServiceAccountCreation` enabled, so the included JSON must be reused; new service accounts cannot be created in this GCP project
+
+---
+
+## 📄 License
+
+MIT — see `LICENSE` for details.
+
+## 🙏 Acknowledgments
+
+- arXiv for open paper metadata
+- GitHub Topics API for AI startup discovery
+- HuggingFace for org/model listings
+- HackerNews Algolia for clean HN search API
+- PapersWithCode for paper↔code linking

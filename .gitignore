@@ -22,3 +22,4 @@ inspect_*.py
 list_*.py
 probe_*.py
 enrich_log.txt
+credentials/
