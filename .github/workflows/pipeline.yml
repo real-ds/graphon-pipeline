@@ -48,6 +48,16 @@ jobs:
           path: data/pipeline.db
           key: pipeline-db-v1
 
+      - name: Restore from seed if no cache
+        if: steps.cache-db.outputs.cache-hit != 'true'
+        run: |
+          if [ -f data/seed_db/pipeline.db ]; then
+            cp data/seed_db/pipeline.db data/pipeline.db
+            echo "Restored DB from seed (data/seed_db/pipeline.db)"
+          else
+            echo "No seed DB found, starting with empty database"
+          fi
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
@@ -92,16 +102,17 @@ jobs:
       - name: Export to CSV
         run: python scripts/export_to_csv.py
 
-      - name: Commit updated CSVs
+      - name: Refresh seed DB and commit
         run: |
+          cp data/pipeline.db data/seed_db/pipeline.db
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add data/exports/ || true
-          if [ -n "$(git status --porcelain data/exports/)" ]; then
-            git commit -m "chore: auto-update exports $(date -u '+%Y-%m-%d %H:%M UTC')" || true
+          git add data/seed_db/pipeline.db data/exports/ || true
+          if [ -n "$(git status --porcelain data/)" ]; then
+            git commit -m "chore: refresh seed DB and exports $(date -u '+%Y-%m-%d %H:%M UTC')" || true
             git push || echo "Push skipped (no changes or credentials)"
           else
-            echo "No CSV changes to commit."
+            echo "No data changes to commit."
           fi
 
       - name: Post-result summary

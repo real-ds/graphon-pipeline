@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 data/*.db
+!data/seed_db/pipeline.db
 data/raw/*
 data/processed/*
 data/exports/*
