@@ -1,8 +1,8 @@
 name: Run AI Intelligence Pipeline
 
 on:
-  # Run every day at 08:00 UTC — fetches fresh news + jobs (last 24h)
-  # Uses cached DB to retain all previously scraped data
+  # Run every day at 08:00 UTC — full pipeline (papers+startups+products+news+jobs)
+  # so the Google Sheet always has ALL data, not just freshness.
   schedule:
     - cron: "0 8 * * *"
 
@@ -114,5 +114,5 @@ jobs:
           echo "Run ID: ${{ github.run_id }}"
           echo "========================================"
           echo ""
-          echo "DB was restored from cache: ${{ steps.cache-db.outputs.cache-hit }}"
-          echo "Google Sheet updated at: https://docs.google.com/spreadsheets/d/${{ secrets.GOOGLE_SHEETS_ID }}"
+          echo "DB cache hit: ${{ steps.cache-db.outputs.cache-hit }}"
+          echo "Google Sheet: https://docs.google.com/spreadsheets/d/${{ secrets.GOOGLE_SHEETS_ID }}"
