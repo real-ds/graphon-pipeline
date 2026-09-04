@@ -3,6 +3,8 @@
 > **Pipeline built for the GraphOne AI Engineer Assessment, 2026-09-04.**
 > Target: 6-tab Google Sheet (Startups, Products, Research Papers, Jobs, News, Entity Mapping Log).
 
+![Architecture Diagram](architecture.png)
+
 ## 1. Scale Strategy — collecting 500,000+ records without manual intervention
 
 ### Pipeline Architecture (5-stage queue)

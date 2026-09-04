@@ -7,6 +7,8 @@
 >
 > **Built for the GraphOne AI Engineer Take-Home Assessment — 2026-09-04**
 
+![Architecture Diagram](docs/architecture.png)
+
 [![Tests](https://img.shields.io/badge/tests-24%2F24%20passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)

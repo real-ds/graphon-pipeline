@@ -4,6 +4,8 @@
 > **Tone: conversational, no jargon unexplained, every term defined on first use.**
 > **Goal: by the end of this doc, you should be able to explain this pipeline to a friend over coffee.**
 
+![Architecture Diagram](architecture.png)
+
 ---
 
 ## Table of Contents
