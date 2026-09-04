@@ -1,0 +1,12 @@
+pydantic>=2.7,<3
+aiohttp>=3.9,<4
+playwright>=1.44,<2
+dateparser>=1.2,<2
+rapidfuzz>=3.9,<4
+SQLAlchemy>=2.0,<3
+gspread>=6.1,<7
+google-auth>=2.29,<3
+selectolax>=0.3,<0.4
+python-dotenv>=1.0,<2
+pytest>=8.2,<9
+pytest-asyncio>=0.23,<0.24

@@ -1,0 +1,8 @@
+services:
+  pipeline:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./credentials:/app/credentials:ro
+    command: ["python", "-m", "src.pipeline.main", "--phase", "all"]
